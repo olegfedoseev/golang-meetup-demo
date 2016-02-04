@@ -3,16 +3,15 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"strings"
-	//"net/http"
-	//	"os"
 	"time"
 
 	"github.com/docker/engine-api/client"
 	"github.com/docker/engine-api/types"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 func main() {
@@ -37,39 +36,47 @@ func main() {
 		}
 	}
 
-	fmt.Printf("Found slave mysql at %v", container.Ports[0].IP)
+	fmt.Printf("Found MySQL slave server at %v\n", container.Ports[0].IP)
+
+	var mysqlLog = mysql.Logger(log.New(ioutil.Discard, "", 0))
 
 	dsn := fmt.Sprintf("root:mysql@tcp(%s:3306)/docker?charset=utf8", container.Ports[0].IP)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		log.Fatal(err)
 	}
+	mysql.SetLogger(mysqlLog)
 
 	// Лочим таблицы
 	if _, err := db.Exec(`FLUSH TABLES WITH READ LOCK;`); err != nil {
-		log.Print(err)
+		log.Fatal(err)
 	}
+
+	repoName := "mysql-snapshot"
+	tagName := time.Now().Format("20060102-150405")
 
 	// Сохраняем контейнер в новый образ == из diff'а файловой системы делаем новый слой
 	commitOptions := types.ContainerCommitOptions{
 		ContainerID:    container.ID,
-		RepositoryName: "test-mysql-snapshot",
-		Tag:            time.Now().Format("20060102-150405"),
+		RepositoryName: repoName,
+		Tag:            tagName,
 		Comment:        "Snapshooter",
 		Author:         "Snapshooter",
 		Pause:          true,
 	}
 	response, err := cli.ContainerCommit(commitOptions)
-	log.Printf("Commit response: %#v", response)
-	log.Printf("Commit err: %v", err)
+
+	fmt.Printf("Created new image with ID %v\n", response.ID)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Разблокируем таблицы
+	// TODO: [MySQL] 2016/02/04 12:15:20 packets.go:32: unexpected EOF
 	if _, err := db.Exec(`UNLOCK TABLES;`); err != nil {
 		log.Print(err)
 	}
 
-	// http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-	// 	fmt.Fprintf(w, "Last time: %v", last.Unix())
-	// })
-	// log.Fatal(http.ListenAndServe(":8080", nil))
+	fmt.Println("\nStart container by:")
+	fmt.Printf("\tdocker run -d -P -e 'affinity:container==slave-mysql' %s:%s\n", repoName, tagName)
 }
