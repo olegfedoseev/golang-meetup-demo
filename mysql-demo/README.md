@@ -20,7 +20,7 @@
 
 Но никто не мешает всё это сделать на одном хосте с докером. Для этого надо
 убрать `-e 'affinity:container!=production-mysql' \` из команды запуска слейва и
-везде убрать `--net=vb-net` или таки создать сеть на одном хосте.
+везде убрать `--net=mysql-net` или таки создать сеть на одном хосте.
 
 -----
 
@@ -30,17 +30,17 @@ _Если у вас уже есть запущенный MySQL сервер, к�
 
 Для начала запустим эмуляцию "боевого" MySQL сервер:
 
-    $ docker run -d \
+    $ production_mysql_id=$(docker run -d \
         --name=production-mysql \
-        --net=vb-net \
+        --net=mysql-net \
         -p 3306:3306 \
         -v /var/lib/mysql:/var/lib/mysql \
         -e MYSQL_ROOT_PASSWORD=mysql mysql:5.6 \
-        --server-id=42 --log-bin-index=/tmp/mysql-bin-log --log-bin=/var/lib/mysql/bin
+        --server-id=42 --log-bin-index=/tmp/mysql-bin-log --log-bin=/var/lib/mysql/bin)
 
 Этой командой мы говорим [запустить](https://docs.docker.com/engine/reference/run/) контейнер с именем `production-mysql`
 в фоне (`-d`) из образа [`mysql:5.6`](https://hub.docker.com/_/mysql/).
-Для контейнера мы хотим использовать ранее созданную сеть `vb-net`.
+Для контейнера мы хотим использовать ранее созданную сеть `mysql-net`.
 Так же в контейнер мы хотим [примонтировать](https://docs.docker.com/engine/userguide/dockervolumes/)
 директорию `/var/lib/mysql` по такому же пути в контейнере (`-v /var/lib/mysql:/var/lib/mysql`).
 
@@ -49,7 +49,7 @@ _Если у вас уже есть запущенный MySQL сервер, к�
 уникальные id сервера для репликации).
 
 В ответ `docker run` вернёт нам ID свежесозданного контейнера. Его стоит сохранить,
-например в переменную окружения. Далее в коде она будет называться `$production-mysql-id`
+например в переменную окружения. Далее в коде она будет называться `$production_mysql_id`
 
 Аргумент `-p 3306:3306` в данном случае опционален, он говорит "пробросить" порт 3306
 из контейнера на такой же порт на хостовом интерфейсе. Это позволит проще
@@ -62,19 +62,19 @@ _Если у вас уже есть запущенный MySQL сервер, к�
 этот образ, если его нет на нужном сервере.
 
 Теперь мы можем подключится к контейнеру или через адрес хоста, на котором он
-запущен или через внутренний хост в `vb-net`. Но для этого надо сначала узнать его адрес:
+запущен или через внутренний хост в `mysql-net`. Но для этого надо сначала узнать его адрес:
 
-    $ docker inspect \
+    $ master_ip=$(docker inspect \
         --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-        $production-mysql-id)
+        $production_mysql_id))
 
 В ответ мы получим IP-адрес, его стоит так же сохранить в переменную, далее он
-будет часто использоваться. Назовём её `$masterip`
+будет часто использоваться. Назовём её `$master_ip`
 
 Зная его адрес, мы можем подключится к нему через консольный клиент:
 
     $ echo "show variables LIKE 'server_id';" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$masterip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$master_ip -uroot -pmysql
 
 В ответ мы должны увидеть примерно такой вывод:
 
@@ -90,13 +90,13 @@ _В данном случае mysql-client запускается так же в
 
 Команда для запуска почти такая же, как и для "боевого", но есть отличия:
 
-    $ docker run -d \
+    $ slave_id=$(docker run -d \
         --name=slave-mysql \
-        --net=vb-net \
+        --net=mysql-net \
         -p 3306:3306 \
         -e 'affinity:container!=production-mysql' \
         -e MYSQL_ROOT_PASSWORD=mysql mysql:5.6 \
-        --server-id 58 --datadir=/var/lib/slave-mysql
+        --server-id 58 --datadir=/var/lib/slave-mysql)
 
 Самое важное отличие тут в том, что мы *не монтируем* директорию в контейнер и более
 того, последним аргументом мы говорим mysqld писать в [другую директорию](https://github.com/docker-library/mysql/blob/ed198ce2e8aa78613c615f20c5c4dd09fa450f66/5.6/Dockerfile#L40), потому
@@ -119,6 +119,10 @@ _Если запускаете это не на swarm-кластере или с
 Из таблицы видно, что "боевой" сервер запущен на хосте `swarm-node-02`, а слейв на `swarm-node-01`
 По аналогии с мастером IP-адрес слейва сохраняем в $slaveip
 
+    $ slave_ip=$(docker inspect \
+        --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+        $slave_id))
+
 ## Шаг 2. Теперь нам надо настроить репликацию.
 
 _Тут ничего специфичного для докера или этой демки, обычная настройка репликации_
@@ -126,17 +130,17 @@ _Тут ничего специфичного для докера или это�
 Создаем базу на мастере:
 
     $ echo "CREATE DATABASE docker;" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$masterip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$master_ip -uroot -pmysql
 
 Даем права на репликацию юзеру `slave_user` с паролем `password`:
 
     $ echo "GRANT REPLICATION SLAVE ON *.* TO 'slave_user'@'%' IDENTIFIED BY 'password';FLUSH PRIVILEGES;" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$masterip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$master_ip -uroot -pmysql
 
 Проверяем что мастер это мастер:
 
     $ echo "SHOW MASTER STATUS;" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$masterip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$master_ip -uroot -pmysql
 
 Ожидаем что-то типа такого:
 
@@ -146,28 +150,28 @@ _Тут ничего специфичного для докера или это�
 Создаем базу на слейве:
 
     $ echo "CREATE DATABASE docker;" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
 
 Говорим кто у нас мастер:
 
-    $ echo "CHANGE MASTER TO MASTER_HOST='$masterip',\
+    $ echo "CHANGE MASTER TO MASTER_HOST='$master_ip',\
         MASTER_USER='slave_user', \
         MASTER_PASSWORD='password', \
         MASTER_LOG_FILE='bin.000002', \
         MASTER_LOG_POS=495;" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
 
 Где значения `bin.000002` и `495` из `SHOW MASTER STATUS` выполненного ранее.
 
 Запускаем слейв:
 
     $ echo "START SLAVE;" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
 
 Проверяем что всё ок:
 
     $ echo "SHOW SLAVE STATUS\G" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
 
 Ожидаем в начале вот такое сообщение:
 
@@ -182,12 +186,12 @@ _Тут ничего специфичного для докера или это�
       `ts` timestamp NOT NULL ON UPDATE CURRENT_TIMESTAMP, \
       PRIMARY KEY (`id`) \
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8;" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$masterip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$master_ip -uroot -pmysql
 
 И на всякий случай проверяем что она появилась на слейве:
 
     $ echo "USE docker; SHOW CREATE TABLE repl_status\G" | docker run \
-        -i --rm --net=vb-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
+        -i --rm --net=mysql-net olegfedoseev/mysql-client -h$slaveip -uroot -pmysql
 
 На этом подготовка почти завершена. У нас должен быть мастер и слейв, с
 базой `docker` и табличкой `repl_status` и настроенной между ними репликацией.
@@ -204,7 +208,7 @@ _Тут ничего специфичного для докера или это�
 Запускаем `docker build --rm -t mysql-prod .` в директории `mysql-prod` и ждём
 пока докер сделает свою магию. После чего остается просто запустить его:
 
-    docker run -d --name mysql-prod --net=vb-net -e MYSQL_HOST=$masterip mysql-prod
+    docker run -d --name mysql-prod --net=mysql-net -e MYSQL_HOST=$master_ip mysql-prod
 
 Теперь у нас есть "боевой" сервер, куда пишет данные наш эмулятор "боевого"
 приложения, и к этому боевому серверу настроен слейв, который все изменения
