@@ -20,15 +20,18 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
-type sshServer struct {
+// SSHServer реализует ssh-сервер, который дублирует запросы на список хостов
+type SSHServer struct {
 	sync.Mutex
 	hosts  map[string]string
 	config *ssh.ServerConfig
 }
 
-func NewSSHServer() (*sshServer, error) {
+// NewSSHServer создает новый SSHServer :)
+func NewSSHServer() (*SSHServer, error) {
 	config := &ssh.ServerConfig{
 		NoClientAuth: true, // пускаем всех, это же демка
+		// Если NoClientAuth поставить в false, то можно сделать проверку паролей или ключей
 		PasswordCallback: func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 			log.Printf("Welcome user '%s' with password '%s'", conn.User(), string(password))
 			return &ssh.Permissions{
@@ -41,110 +44,28 @@ func NewSSHServer() (*sshServer, error) {
 
 	privateBytes, err := ioutil.ReadFile("id_rsa")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to read id_rsa: %v", err)
 	}
 	private, err := ssh.ParsePrivateKey(privateBytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to parse private key: %v", err)
 	}
 	config.AddHostKey(private)
 
-	return &sshServer{
+	return &SSHServer{
 		hosts:  make(map[string]string),
 		config: config,
 	}, nil
 }
 
-func (s *sshServer) ListenAndServe(addr string) error {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			return err
-		}
-
-		go func() {
-			defer conn.Close()
-			_, chans, reqs, err := ssh.NewServerConn(conn, s.config)
-			if err != nil {
-				log.Printf("ERROR: %v", err)
-				return
-			}
-			go ssh.DiscardRequests(reqs)
-
-			for newChannel := range chans {
-				if newChannel.ChannelType() != "session" {
-					newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
-					continue
-				}
-				channel, requests, err := newChannel.Accept()
-				if err != nil {
-					log.Printf("ERROR: %v", err)
-					return
-				}
-				go s.handleChannel(channel, requests)
-			}
-		}()
-	}
-}
-
-func (s *sshServer) handleChannel(channel ssh.Channel, requests <-chan *ssh.Request) {
-	for req := range requests {
-		switch req.Type {
-		case "exec":
-			var payload = struct {
-				Value string
-			}{}
-			ssh.Unmarshal(req.Payload, &payload)
-
-			result, status, err := s.runCmd(payload.Value)
-			if err != nil {
-				log.Printf("ERROR: %v", err)
-				channel.Close()
-				continue
-			}
-			sendCmdResult(channel, result, status)
-			req.Reply(true, nil)
-			channel.Close()
-
-		case "shell":
-			go func() {
-				term := terminal.NewTerminal(channel, "# ")
-				defer channel.Close()
-				for {
-					line, err := term.ReadLine()
-					if err != nil {
-						break
-					}
-					if line == "" {
-						continue
-					}
-
-					result, status, err := s.runCmd(line)
-					if err != nil {
-						log.Printf("ERROR: %v", err)
-						channel.Close()
-						continue
-					}
-					sendCmdResult(channel, result, status)
-				}
-			}()
-		}
-	}
-}
-
-func (s *sshServer) AddHost(container, host string) {
+func (s *SSHServer) AddHost(container, host string) {
 	s.Mutex.Lock()
 	defer s.Mutex.Unlock()
 
 	s.hosts[container] = host
 }
 
-func (s *sshServer) RemoveContainer(container string) {
+func (s *SSHServer) RemoveContainer(container string) {
 	s.Mutex.Lock()
 	defer s.Mutex.Unlock()
 
@@ -153,7 +74,108 @@ func (s *sshServer) RemoveContainer(container string) {
 	}
 }
 
-func (s *sshServer) runCmd(cmd string) ([]byte, uint32, error) {
+func (s *SSHServer) ListenAndServe(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("Failed to listen on %v: %v", addr, err)
+	}
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return fmt.Errorf("Failed to accept connection: %v", err)
+		}
+
+		go s.connectionHandler(conn)
+	}
+}
+
+func (s *SSHServer) connectionHandler(conn net.Conn) {
+	defer conn.Close()
+	_, chans, reqs, err := ssh.NewServerConn(conn, s.config)
+	if err != nil {
+		log.Printf("ERROR: %v", err)
+		return
+	}
+	go ssh.DiscardRequests(reqs)
+
+	for newChannel := range chans {
+		if newChannel.ChannelType() != "session" {
+			newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
+			continue
+		}
+		channel, requests, err := newChannel.Accept()
+		if err != nil {
+			log.Printf("Failed to accept: %v", err)
+			return
+		}
+		for request := range requests {
+			switch request.Type {
+			case "exec":
+				if err := s.execHandler(channel, request); err != nil {
+					log.Printf("Failed to handle 'exec': %v", err)
+					return
+				}
+
+			case "shell":
+				if err := s.shellHandler(channel); err != nil {
+					log.Printf("Failed to handle 'shell': %v", err)
+					return
+				}
+
+			}
+		}
+	}
+}
+
+func (s *SSHServer) execHandler(channel ssh.Channel, request *ssh.Request) error {
+	defer channel.Close()
+
+	var payload = struct {
+		Value string
+	}{}
+	if err := ssh.Unmarshal(request.Payload, &payload); err != nil {
+		return fmt.Errorf("Failed to unmarshal payload: %v", err)
+	}
+
+	result, status, err := s.runCmd(payload.Value)
+	if err != nil {
+		return fmt.Errorf("Failed to run command: %v", err)
+	}
+	if err := sendCmdResult(channel, result, status); err != nil {
+		return fmt.Errorf("Failed to send result: %v", err)
+	}
+	if err := request.Reply(true, nil); err != nil {
+		return fmt.Errorf("Failed to send reply: %v", err)
+	}
+	return nil
+}
+
+func (s *SSHServer) shellHandler(channel ssh.Channel) error {
+	defer channel.Close()
+
+	term := terminal.NewTerminal(channel, "# ")
+	for {
+		line, err := term.ReadLine()
+		if err != nil {
+			break
+		}
+		if line == "" {
+			return nil
+		}
+
+		result, status, err := s.runCmd(line)
+		if err != nil {
+			return fmt.Errorf("Failed to run command: %v", err)
+		}
+		if err := sendCmdResult(channel, result, status); err != nil {
+			return fmt.Errorf("Failed to send result: %v", err)
+		}
+	}
+	return nil
+}
+
+func (s *SSHServer) runCmd(cmd string) ([]byte, uint32, error) {
 	s.Mutex.Lock()
 	defer s.Mutex.Unlock()
 
@@ -191,7 +213,7 @@ func (s *sshServer) runCmd(cmd string) ([]byte, uint32, error) {
 	return result.Bytes(), 0, nil
 }
 
-// exec executes the given command on the given host
+// exec выполняет команду по ssh, в нашем случае с фиксированным юзером
 func exec(cmd, host string, env map[string]string) ([]byte, error) {
 	// Это демка, так что логин пароль захардкожены (используем образ ubuntu-upstart)
 	conn, err := ssh.Dial("tcp", host, &ssh.ClientConfig{
@@ -201,12 +223,12 @@ func exec(cmd, host string, env map[string]string) ([]byte, error) {
 		},
 	})
 	if err != nil {
-		return []byte{}, err
+		return []byte{}, fmt.Errorf("Failer to connect to host: %v", err)
 	}
 
 	session, err := conn.NewSession()
 	if err != nil {
-		return []byte{}, err
+		return []byte{}, fmt.Errorf("Failer to start new ssh session: %v", err)
 	}
 
 	defer func() {
@@ -216,18 +238,24 @@ func exec(cmd, host string, env map[string]string) ([]byte, error) {
 
 	for key, value := range env {
 		if err := session.Setenv(key, value); err != nil {
-			return []byte{}, err
+			return []byte{}, fmt.Errorf("Failer to set env var: %v", err)
 		}
 	}
 	return session.CombinedOutput(cmd)
 }
 
-func sendCmdResult(channel ssh.Channel, result []byte, statusCode uint32) {
-	channel.Write(result)
+func sendCmdResult(channel ssh.Channel, result []byte, statusCode uint32) error {
+	if _, err := channel.Write(result); err != nil {
+		return fmt.Errorf("Failed to write to ssh-channel: %v", err)
+	}
 	status := struct {
 		Status uint32
 	}{
 		statusCode,
 	}
-	channel.SendRequest("exit-status", false, ssh.Marshal(&status))
+	_, err := channel.SendRequest("exit-status", false, ssh.Marshal(&status))
+	if err != nil {
+		return fmt.Errorf("Failed to SendRequest: %v", err)
+	}
+	return nil
 }

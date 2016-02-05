@@ -15,21 +15,33 @@ func main() {
 	// Создаем наш SSH-сервер
 	server, err := NewSSHServer()
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("Failed to create SSH-server: %v", err)
 	}
-	go server.ListenAndServe(":2222")
 
 	// Создаем клиент докера из переменных окружения
 	client, err := docker.NewClientFromEnv()
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("Failed to create docker-client: %v", err)
 	}
 
-	// Получаем список всех контейнеров
+	// Создаем канал для событий и подписываемся на них
+	eventChan := make(chan *docker.APIEvents, 100)
+	if err := client.AddEventListener(eventChan); err != nil {
+		log.Fatalf("Failed to subscibe to docker events: %v", err)
+	}
+	go dockerEventListener(server, client, eventChan)
+	getExistingContainers(server, client)
+
+	log.Fatalln(server.ListenAndServe(":2222"))
+}
+
+// getExistingContainers получает от докера все запущенные контейнеры и добавляет
+// в ssh-сервер те, у кого есть ssh
+func getExistingContainers(server *SSHServer, client *docker.Client) {
 	options := docker.ListContainersOptions{All: true}
 	containers, err := client.ListContainers(options)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("Failed to get list of containers: %v", err)
 	}
 
 	for _, c := range containers {
@@ -44,18 +56,13 @@ func main() {
 			}
 		}
 	}
+}
 
-	// Создаем канал для событий и подписываемся на них
-	eventChan := make(chan *docker.APIEvents, 100)
-	if err := client.AddEventListener(eventChan); err != nil {
-		log.Fatalln(err)
-	}
-	log.Println("Watching docker events")
-
-	// Слушаем и реагируем на события
+// dockerEventListener читает из канала события от докера и реагирует на них
+func dockerEventListener(server *SSHServer, client *docker.Client, events chan *docker.APIEvents) {
 	for {
 		select {
-		case event, ok := <-eventChan:
+		case event, ok := <-events:
 			if !ok {
 				log.Printf("Docker daemon connection interrupted")
 				break
