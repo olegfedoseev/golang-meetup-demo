@@ -23,7 +23,7 @@ Swarm может использовать несколько механизмо�
 
 Когда у нас запущена машина для consul'а, настало время запустить сам consul:
 
-    docker $(docker-machine config mh-keystore) run \
+    docker $(docker-machine config consul-master) run \
         -d -p "8500:8500" --name="consul" --hostname "consul" \
         progrium/consul -server -bootstrap
 

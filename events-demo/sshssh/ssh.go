@@ -44,11 +44,11 @@ func NewSSHServer() (*SSHServer, error) {
 
 	privateBytes, err := ioutil.ReadFile("id_rsa")
 	if err != nil {
-		return nil, fmt.Errorf("Failed to read id_rsa: %v", err)
+		return nil, fmt.Errorf("failed to read id_rsa: %v", err)
 	}
 	private, err := ssh.ParsePrivateKey(privateBytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse private key: %v", err)
+		return nil, fmt.Errorf("failed to parse private key: %v", err)
 	}
 	config.AddHostKey(private)
 
@@ -77,13 +77,13 @@ func (s *SSHServer) RemoveContainer(container string) {
 func (s *SSHServer) ListenAndServe(addr string) error {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("Failed to listen on %v: %v", addr, err)
+		return fmt.Errorf("failed to listen on %v: %v", addr, err)
 	}
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			return fmt.Errorf("Failed to accept connection: %v", err)
+			return fmt.Errorf("failed to accept connection: %v", err)
 		}
 
 		go s.connectionHandler(conn)
@@ -135,18 +135,18 @@ func (s *SSHServer) execHandler(channel ssh.Channel, request *ssh.Request) error
 		Value string
 	}{}
 	if err := ssh.Unmarshal(request.Payload, &payload); err != nil {
-		return fmt.Errorf("Failed to unmarshal payload: %v", err)
+		return fmt.Errorf("failed to unmarshal payload: %v", err)
 	}
 
 	result, status, err := s.runCmd(payload.Value)
 	if err != nil {
-		return fmt.Errorf("Failed to run command: %v", err)
+		return fmt.Errorf("failed to run command: %v", err)
 	}
 	if err := sendCmdResult(channel, result, status); err != nil {
-		return fmt.Errorf("Failed to send result: %v", err)
+		return fmt.Errorf("failed to send result: %v", err)
 	}
 	if err := request.Reply(true, nil); err != nil {
-		return fmt.Errorf("Failed to send reply: %v", err)
+		return fmt.Errorf("failed to send reply: %v", err)
 	}
 	return nil
 }
@@ -166,10 +166,10 @@ func (s *SSHServer) shellHandler(channel ssh.Channel) error {
 
 		result, status, err := s.runCmd(line)
 		if err != nil {
-			return fmt.Errorf("Failed to run command: %v", err)
+			return fmt.Errorf("failed to run command: %v", err)
 		}
 		if err := sendCmdResult(channel, result, status); err != nil {
-			return fmt.Errorf("Failed to send result: %v", err)
+			return fmt.Errorf("failed to send result: %v", err)
 		}
 	}
 	return nil
@@ -223,12 +223,12 @@ func exec(cmd, host string, env map[string]string) ([]byte, error) {
 		},
 	})
 	if err != nil {
-		return []byte{}, fmt.Errorf("Failer to connect to host: %v", err)
+		return []byte{}, fmt.Errorf("failer to connect to host: %v", err)
 	}
 
 	session, err := conn.NewSession()
 	if err != nil {
-		return []byte{}, fmt.Errorf("Failer to start new ssh session: %v", err)
+		return []byte{}, fmt.Errorf("failer to start new ssh session: %v", err)
 	}
 
 	defer func() {
@@ -238,7 +238,7 @@ func exec(cmd, host string, env map[string]string) ([]byte, error) {
 
 	for key, value := range env {
 		if err := session.Setenv(key, value); err != nil {
-			return []byte{}, fmt.Errorf("Failer to set env var: %v", err)
+			return []byte{}, fmt.Errorf("failer to set env var: %v", err)
 		}
 	}
 	return session.CombinedOutput(cmd)
@@ -246,7 +246,7 @@ func exec(cmd, host string, env map[string]string) ([]byte, error) {
 
 func sendCmdResult(channel ssh.Channel, result []byte, statusCode uint32) error {
 	if _, err := channel.Write(result); err != nil {
-		return fmt.Errorf("Failed to write to ssh-channel: %v", err)
+		return fmt.Errorf("failed to write to ssh-channel: %v", err)
 	}
 	status := struct {
 		Status uint32
@@ -255,7 +255,7 @@ func sendCmdResult(channel ssh.Channel, result []byte, statusCode uint32) error 
 	}
 	_, err := channel.SendRequest("exit-status", false, ssh.Marshal(&status))
 	if err != nil {
-		return fmt.Errorf("Failed to SendRequest: %v", err)
+		return fmt.Errorf("failed to SendRequest: %v", err)
 	}
 	return nil
 }
