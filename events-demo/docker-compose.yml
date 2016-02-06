@@ -1,0 +1,31 @@
+version: '2.0'
+services:
+  app:
+    image: app
+    build: ./app
+    networks:
+      - back
+    ports:
+      - "80"
+    environment:
+      constraint: "instance==backend"
+  balancer:
+    build: ./balancer
+    image: balancer
+    hostname: docker.demo
+    ports:
+      - "80:80"
+    networks:
+      - front
+      - back
+    volumes:
+      - "${DOCKER_CERT_PATH}:/etc/docker:ro"
+    environment:
+      constraint: "instance=frontend"
+      DOCKER_HOST: "${DOCKER_HOST}"
+
+networks:
+  front:
+    driver: overlay
+  back:
+    driver: overlay
