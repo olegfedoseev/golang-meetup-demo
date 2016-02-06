@@ -199,17 +199,10 @@ func (s *SSHServer) runCmd(cmd string) ([]byte, uint32, error) {
 		}(cmd, host)
 	}
 
-	// go func() {
-	// 	for buf := range resultsChan {
-	// 		result.WriteString(buf)
-	// 	}
-	// }()
-
 	wg.Wait()
 	for idx := 1; idx <= len(s.hosts); idx++ {
 		result.WriteString(<-resultsChan)
 	}
-	close(resultsChan)
 	return result.Bytes(), 0, nil
 }
 

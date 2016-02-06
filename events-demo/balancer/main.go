@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httputil"
-	//	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -14,11 +13,14 @@ import (
 	docker "github.com/fsouza/go-dockerclient"
 )
 
+// Upstreams хранит в себе список хостов, куда мы будем
+// проксировать запрос
 type Upstreams struct {
 	sync.Mutex
 	hosts map[string]string
 }
 
+// Add добавляет новых хост в список апстримов
 func (u *Upstreams) Add(container, host, port string) {
 	u.Lock()
 	defer u.Unlock()
@@ -30,6 +32,7 @@ func (u *Upstreams) Add(container, host, port string) {
 	u.hosts[container] = fmt.Sprintf("%v:%v", host, port)
 }
 
+// Remove удаляет контейнер из списка
 func (u *Upstreams) Remove(container string) {
 	u.Lock()
 	defer u.Unlock()
@@ -104,11 +107,7 @@ func main() {
 	// Простой хендлер, который показывает хост и текущее время
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t := time.Now()
-
-		//r.Host = "localhost"
-		w.Header().Add("X-Powered-By", "Go")
 		proxy.ServeHTTP(w, r)
-
 		// Ну и access.log для наглядности
 		log.Printf("%s %q %v\n", r.Method, r.URL.String(), time.Since(t))
 	})
@@ -128,6 +127,7 @@ func dockerEventListener(events chan *docker.APIEvents) {
 	for {
 		select {
 		case event, ok := <-events:
+			// Вдруг канал уже закрыт и события кончились
 			if !ok {
 				log.Printf("Docker daemon connection interrupted")
 				break
@@ -144,6 +144,7 @@ func dockerEventListener(events chan *docker.APIEvents) {
 				upstreams.Remove(event.ID)
 			}
 
+		// Пингуем клиент, чтобы про нас не забывали
 		case <-time.After(10 * time.Second):
 			if err := client.Ping(); err != nil {
 				log.Printf("Unable to ping docker daemon: %s", err)
@@ -157,10 +158,6 @@ func addContainer(containerID string) {
 	log.Printf("Container %s was started", containerID[:12])
 
 	container, _ := client.InspectContainer(containerID)
-	if len(container.NetworkSettings.Ports) == 0 {
-		return
-	}
-
 	for port, mapping := range container.NetworkSettings.Ports {
 		if port == "80/tcp" {
 			log.Printf("Added %v: %s:%v\n",
